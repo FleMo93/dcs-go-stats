@@ -1,0 +1,4 @@
+{
+    "sourceDir": "./statistics/raw",
+    "outputDir": "./statistics/agg"
+}
