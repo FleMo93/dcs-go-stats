@@ -130,9 +130,9 @@ func getPlayerEvents(filePath string) ([]PlayerEvent, error) {
 
 func getInfoFromFileName(fileName string) (FileNameInfo, error) {
 	sessionInfo := strings.Split(fileName, "-[")
-	for i, si := range sessionInfo {
-		sessionInfo[i] = strings.TrimRight(si, "]")
-		sessionInfo[i] = strings.TrimRight(si, "].csv")
+	for i, _ := range sessionInfo {
+		sessionInfo[i] = strings.TrimSuffix(sessionInfo[i], "]")
+		sessionInfo[i] = strings.TrimSuffix(sessionInfo[i], "].csv")
 	}
 
 	sessionStart, err := strconv.ParseInt(sessionInfo[0], 10, 64)
