@@ -1,8 +1,10 @@
 package dcsgostats
 
 import (
+	"bufio"
 	"errors"
 	"io/ioutil"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -105,21 +107,25 @@ func getEventFromString(str string) (PlayerEvent, error) {
 }
 
 func getPlayerEvents(filePath string) ([]PlayerEvent, error) {
-	statsBytes, err := ioutil.ReadFile(filePath)
+	file, err := os.Open(filePath)
 	if err != nil {
 		return []PlayerEvent{}, err
 	}
 
-	eventLines := strings.Split(string(statsBytes), "\n")
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
 	events := []PlayerEvent{}
 
-	for _, line := range eventLines {
+	for scanner.Scan() {
+		line := scanner.Text()
+
 		if line == "" {
 			continue
 		}
+
 		playerEvent, err := getEventFromString(line)
 		if err != nil {
-			return []PlayerEvent{}, err
+			return []PlayerEvent{}, errors.New(filePath + ":\n" + err.Error())
 		}
 
 		events = append(events, playerEvent)

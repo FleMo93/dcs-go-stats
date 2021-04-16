@@ -1,3 +1,4 @@
 cmd/*.exe
 cmd/statistics/
+cmd/*.log
 .vscode/
