@@ -39,6 +39,7 @@ type PlayerSession struct {
 	missionName  string
 	sessionStart time.Time
 	events       []PlayerEvent
+	sorties      []Sortie
 }
 
 type PlayerNameInfo struct {
@@ -57,6 +58,22 @@ type FileNameInfo struct {
 	missionName  string
 	playerName   string
 	playerId     string
+}
+
+type Sortie struct {
+	startTime          int64
+	endTime            int64
+	plane              string
+	endReason          string
+	eventTakeoff       *EventTakeoff
+	eventLanding       *EventLanding
+	eventKills         []*EventKill
+	eventFriendlyFires []*EventFriendlyFire
+	eventEject         *EventEject
+	eventPilotDeath    *EventPilotDeath
+	eventKilledBy      *EventKilledBy
+	eventCrash         *EventCrash
+	events             []*PlayerEvent
 }
 
 func getEventFromString(str string) (PlayerEvent, error) {
@@ -154,6 +171,218 @@ func getInfoFromFileName(fileName string) (FileNameInfo, error) {
 	}, nil
 }
 
+func determineAndSetSortieEnd(sortie *Sortie, event PlayerEventType, eventTime int64) error {
+	if sortie.endTime != 0 && eventTime-30 > sortie.endTime {
+		return nil
+	}
+
+	switch event {
+	case SelfKill:
+		sortie.endTime = eventTime
+		sortie.endReason = SelfKill
+		break
+	case KilledBy:
+		if sortie.endReason == "" || sortie.endReason != SelfKill {
+			sortie.endReason = KilledBy
+		}
+		break
+	case Crash:
+		if sortie.endReason == "" ||
+			(sortie.endReason != SelfKill &&
+				sortie.endReason != KilledBy) {
+			sortie.endReason = Crash
+		}
+		break
+	case PilotDeath:
+		if sortie.endReason == "" ||
+			(sortie.endReason != SelfKill &&
+				sortie.endReason != KilledBy &&
+				sortie.endReason != Crash) {
+			sortie.endReason = PilotDeath
+		}
+		break
+	case Eject:
+		if sortie.endReason == "" ||
+			sortie.endReason == Landing ||
+			sortie.endReason == Disconnect ||
+			sortie.endReason == ChangeSlot {
+			sortie.endReason = Eject
+		}
+		break
+	case Landing:
+		if sortie.endReason == "" {
+			sortie.endReason = Landing
+		}
+		break
+	case Disconnect:
+		if sortie.endReason == "" {
+			sortie.endReason = Disconnect
+		}
+		break
+	case ChangeSlot:
+		if sortie.endReason == "" {
+			sortie.endReason = SelfKill
+		}
+		break
+	default:
+		return errors.New("No end event")
+	}
+
+	if sortie.endTime == 0 {
+		sortie.endTime = eventTime
+	}
+
+	return nil
+}
+
+func getSortiesFromSession(session *PlayerSession) ([]Sortie, error) {
+	sorties := []Sortie{}
+	lastPlane := ""
+
+	sortie := Sortie{
+		events:             []*PlayerEvent{},
+		startTime:          0,
+		endTime:            0,
+		plane:              lastPlane,
+		endReason:          "",
+		eventKills:         []*EventKill{},
+		eventFriendlyFires: []*EventFriendlyFire{},
+		eventPilotDeath:    nil,
+		eventCrash:         nil,
+		eventLanding:       nil,
+		eventTakeoff:       nil,
+	}
+
+	for _, event := range session.events {
+		switch event.eventType {
+		case Connect:
+			break
+		case Takeoff:
+			takeoffEvent, err := ToTakeoffEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+			sortie.startTime = event.time
+			sortie.eventTakeoff = &takeoffEvent
+			break
+
+		case Kill:
+			killEvent, err := ToKillEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+			sortie.eventKills = append(sortie.eventKills, &killEvent)
+			break
+
+		case FriendlyFire:
+			friendlyFireEvent, err := ToFriendlyFireEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			sortie.eventFriendlyFires = append(sortie.eventFriendlyFires, &friendlyFireEvent)
+			break
+
+		case ChangeSlot:
+			changeSlotEvent, err := ToChangeSlotEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+			sortie.plane = changeSlotEvent.unitType
+			lastPlane = changeSlotEvent.unitType
+			err = determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+			break
+
+		case Disconnect:
+			err := determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+			break
+
+		case Landing:
+			landingEvent, err := ToLandingEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			err = determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			sortie.eventLanding = &landingEvent
+			break
+
+		case Crash:
+			crashEvent, err := ToCrashEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			err = determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			sortie.eventCrash = &crashEvent
+			break
+
+		case Eject:
+			ejectEvent, err := ToEjectEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			err = determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			sortie.eventEject = &ejectEvent
+			break
+
+		case PilotDeath:
+			pilotDeathEvent, err := ToPilotDeathEvent(event)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			err = determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			sortie.eventPilotDeath = &pilotDeathEvent
+			break
+
+		case KilledBy:
+			killedByEvent, err := ToKilledByEvent(event)
+			if err != nil {
+
+			}
+
+			err = determineAndSetSortieEnd(&sortie, event.eventType, event.time)
+			if err != nil {
+				return []Sortie{}, err
+			}
+
+			sortie.eventKilledBy = &killedByEvent
+			break
+
+		default:
+			return []Sortie{}, errors.New("Unhandeld event " + string(event.eventType))
+		}
+
+		sortie.events = append(sortie.events, &event)
+	}
+
+	return sorties, nil
+}
+
 func ReadData(sourceDir string, statsDir string) ([]Player, error) {
 	fis, err := ioutil.ReadDir(sourceDir)
 	if err != nil {
@@ -199,8 +428,13 @@ func ReadData(sourceDir string, statsDir string) ([]Player, error) {
 			missionName:  info.missionName,
 			sessionStart: time.Unix(info.sessionStart, 0),
 			events:       events,
+			sorties:      []Sortie{},
 		}
 		player.sessions = append(player.sessions, playerSession)
+		playerSession.sorties, err = getSortiesFromSession(&playerSession)
+		if err != nil {
+			return []Player{}, err
+		}
 		players[info.playerId] = player
 	}
 
@@ -222,10 +456,23 @@ type EventDisconnect struct {
 
 type EventKill struct {
 	*PlayerEvent
+	killerUnitType string
+	killerSide     int
+	victimPlayerID string
+	victimUnitType string
+	victimSide     int
+	weaponName     string
 }
 
 type EventKilledBy struct {
 	*PlayerEvent
+	killerPlayerID string
+	killerUnitType string
+	killerSide     int
+	victimPlayerID string
+	victimUnitType string
+	victimSide     int
+	weaponName     string
 }
 
 type EventSelfKill struct {
@@ -234,37 +481,51 @@ type EventSelfKill struct {
 
 type EventChangeSlot struct {
 	*PlayerEvent
+	side      int
+	unitID    string
+	unitType  string
+	role      string
+	groupName string
 }
 
 type EventCrash struct {
 	*PlayerEvent
+	unitID string
 }
 
 type EventEject struct {
 	*PlayerEvent
+	unitID string
 }
 
 type EventTakeoff struct {
 	*PlayerEvent
+	airdomeName *string
+	unitID      string
 }
 
 type EventLanding struct {
 	*PlayerEvent
+	unitID      string
+	airdomeName string
 }
 
 type EventPilotDeath struct {
 	*PlayerEvent
+	unitID string
 }
 
 type EventFriendlyFire struct {
 	*PlayerEvent
+	weaponName     string
+	victimPlayerID string
 }
 
-const invalidEventMessage = "Invalid event"
+const invalidEventMessage = "Invalid event: "
 
 func ToConnectEvent(playerEvent PlayerEvent) (EventConnect, error) {
 	if len(playerEvent.args) > 0 || playerEvent.eventType != Connect {
-		return EventConnect{}, errors.New(invalidEventMessage)
+		return EventConnect{}, errors.New(invalidEventMessage + string(Connect))
 	}
 
 	return EventConnect{
@@ -274,10 +535,156 @@ func ToConnectEvent(playerEvent PlayerEvent) (EventConnect, error) {
 
 func ToDisconnectEvent(playerEvent PlayerEvent) (EventDisconnect, error) {
 	if len(playerEvent.args) > 0 || playerEvent.eventType != Disconnect {
-		return EventDisconnect{}, errors.New(invalidEventMessage)
+		return EventDisconnect{}, errors.New(invalidEventMessage + Disconnect)
 	}
 
 	return EventDisconnect{
 		PlayerEvent: &playerEvent,
+	}, nil
+}
+
+func ToTakeoffEvent(playerEvent PlayerEvent) (EventTakeoff, error) {
+	if len(playerEvent.args) < 1 || len(playerEvent.args) > 2 || playerEvent.eventType != Takeoff {
+		return EventTakeoff{}, errors.New(invalidEventMessage + Takeoff)
+	}
+
+	var airdomeName *string = nil
+	if len(playerEvent.args) == 2 {
+		airdomeName = &playerEvent.args[1]
+	}
+
+	return EventTakeoff{
+		PlayerEvent: &playerEvent,
+		unitID:      playerEvent.args[0],
+		airdomeName: airdomeName,
+	}, nil
+}
+
+func ToChangeSlotEvent(playerEvent PlayerEvent) (EventChangeSlot, error) {
+	if len(playerEvent.args) != 5 || playerEvent.eventType != ChangeSlot {
+		return EventChangeSlot{}, errors.New(invalidEventMessage + ChangeSlot)
+	}
+
+	side, err := strconv.Atoi(playerEvent.args[0])
+	if err != nil {
+		return EventChangeSlot{}, err
+	}
+
+	return EventChangeSlot{
+		PlayerEvent: &playerEvent,
+		side:        side,
+		unitID:      playerEvent.args[1],
+		unitType:    playerEvent.args[2],
+		role:        playerEvent.args[3],
+		groupName:   playerEvent.args[4],
+	}, nil
+}
+
+func ToLandingEvent(playerEvent PlayerEvent) (EventLanding, error) {
+	if len(playerEvent.args) != 2 || playerEvent.eventType != Landing {
+		return EventLanding{}, errors.New(invalidEventMessage + Landing)
+	}
+
+	return EventLanding{
+		PlayerEvent: &playerEvent,
+		unitID:      playerEvent.args[0],
+		airdomeName: playerEvent.args[1],
+	}, nil
+}
+
+func ToCrashEvent(playerEvent PlayerEvent) (EventCrash, error) {
+	if len(playerEvent.args) != 1 || playerEvent.eventType != Crash {
+		return EventCrash{}, errors.New(invalidEventMessage + Crash)
+	}
+
+	return EventCrash{
+		PlayerEvent: &playerEvent,
+		unitID:      playerEvent.args[0],
+	}, nil
+}
+
+func ToEjectEvent(playerEvent PlayerEvent) (EventEject, error) {
+	if len(playerEvent.args) != 1 || playerEvent.eventType != Eject {
+		return EventEject{}, errors.New(invalidEventMessage + Eject)
+	}
+
+	return EventEject{
+		PlayerEvent: &playerEvent,
+		unitID:      playerEvent.args[0],
+	}, nil
+}
+
+func ToKillEvent(playerEvent PlayerEvent) (EventKill, error) {
+	if len(playerEvent.args) != 6 || playerEvent.eventType != Kill {
+		return EventKill{}, errors.New(invalidEventMessage + Kill)
+	}
+
+	killerSide, err := strconv.Atoi(playerEvent.args[1])
+	if err != nil {
+		return EventKill{}, err
+	}
+
+	victimSide, err := strconv.Atoi(playerEvent.args[4])
+	if err != nil {
+		return EventKill{}, err
+	}
+
+	return EventKill{
+		PlayerEvent:    &playerEvent,
+		killerUnitType: playerEvent.args[0],
+		killerSide:     killerSide,
+		victimPlayerID: playerEvent.args[2],
+		victimUnitType: playerEvent.args[3],
+		victimSide:     victimSide,
+	}, nil
+}
+
+func ToFriendlyFireEvent(playerEvent PlayerEvent) (EventFriendlyFire, error) {
+	if len(playerEvent.args) != 2 || playerEvent.eventType != FriendlyFire {
+		return EventFriendlyFire{}, errors.New(invalidEventMessage + FriendlyFire)
+	}
+
+	return EventFriendlyFire{
+		PlayerEvent:    &playerEvent,
+		weaponName:     playerEvent.args[0],
+		victimPlayerID: playerEvent.args[1],
+	}, nil
+}
+
+func ToPilotDeathEvent(playerEvent PlayerEvent) (EventPilotDeath, error) {
+	if len(playerEvent.args) != 1 || playerEvent.eventType != PilotDeath {
+		return EventPilotDeath{}, errors.New(invalidEventMessage + PilotDeath)
+	}
+
+	return EventPilotDeath{
+		PlayerEvent: &playerEvent,
+		unitID:      playerEvent.args[0],
+	}, nil
+}
+
+func ToKilledByEvent(playerEvent PlayerEvent) (EventKilledBy, error) {
+	// 1618442167;killed_by;Su-27;1;-1;FA-18C_hornet;2;R-27ET (AA-10 Alamo D)
+	if len(playerEvent.args) != 6 || playerEvent.eventType != KilledBy {
+		return EventKilledBy{}, errors.New(invalidEventMessage + KilledBy)
+	}
+
+	killerSide, err := strconv.Atoi(playerEvent.args[1])
+	if err != nil {
+		return EventKilledBy{}, err
+	}
+
+	victimSide, err := strconv.Atoi(playerEvent.args[4])
+	if err != nil {
+		return EventKilledBy{}, err
+	}
+
+	return EventKilledBy{
+		PlayerEvent:    &playerEvent,
+		killerUnitType: playerEvent.args[0],
+		killerSide:     killerSide,
+		killerPlayerID: playerEvent.args[2],
+		victimUnitType: playerEvent.args[3],
+		victimSide:     victimSide,
+		weaponName:     playerEvent.args[5],
 	}, nil
 }
