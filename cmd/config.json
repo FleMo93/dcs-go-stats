@@ -1,4 +1,13 @@
 {
-    "sourceDir": "./statistics/raw",
+    "sources": [
+        {
+            "name": "georgia",
+            "dir": "./statistics/raw/georgia"
+        },
+        {
+            "name": "syria",
+            "dir": "./statistics/raw/syria"
+        }
+    ],
     "outputDir": "./statistics/agg"
 }

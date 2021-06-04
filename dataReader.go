@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+type Source struct {
+	Name      string `json:"name"`
+	Directory string `json:"dir"`
+}
+
 type PlayerEventType string
 
 const (
@@ -38,6 +43,7 @@ type PlayerSession struct {
 	fileName     string
 	missionName  string
 	sessionStart time.Time
+	source       string
 	events       []PlayerEvent
 	sorties      []Sortie
 }
@@ -153,7 +159,7 @@ func getPlayerEvents(filePath string) ([]PlayerEvent, error) {
 
 func getInfoFromFileName(fileName string) (FileNameInfo, error) {
 	sessionInfo := strings.Split(fileName, "-[")
-	for i, _ := range sessionInfo {
+	for i := range sessionInfo {
 		sessionInfo[i] = strings.TrimSuffix(sessionInfo[i], "]")
 		sessionInfo[i] = strings.TrimSuffix(sessionInfo[i], "].csv")
 	}
@@ -383,63 +389,66 @@ func getSortiesFromSession(session *PlayerSession) ([]Sortie, error) {
 	return sorties, nil
 }
 
-func ReadData(sourceDir string, statsDir string) ([]Player, error) {
-	fis, err := ioutil.ReadDir(sourceDir)
-	if err != nil {
-		return []Player{}, err
-	}
+func ReadData(sources []Source, statsDir string) ([]Player, error) {
+	playersMap := make(map[string]Player)
 
-	players := make(map[string]Player)
-
-	for _, fi := range fis {
-		info, err := getInfoFromFileName(fi.Name())
+	for _, src := range sources {
+		fis, err := ioutil.ReadDir(src.Directory)
 		if err != nil {
-			return []Player{}, nil
+			return []Player{}, err
 		}
 
-		player, playerExists := players[info.playerId]
+		for _, fi := range fis {
+			info, err := getInfoFromFileName(fi.Name())
+			if err != nil {
+				return []Player{}, nil
+			}
 
-		if !playerExists {
-			player = Player{
-				playerId: info.playerId,
-				nameInfo: PlayerNameInfo{
+			player, playerExists := playersMap[info.playerId]
+
+			if !playerExists {
+				player = Player{
+					playerId: info.playerId,
+					nameInfo: PlayerNameInfo{
+						name:   info.playerName,
+						occure: info.sessionStart,
+					},
+					sessions: []PlayerSession{},
+				}
+				playersMap[info.playerId] = player
+			}
+
+			if player.nameInfo.occure < info.sessionStart {
+				player.nameInfo = PlayerNameInfo{
 					name:   info.playerName,
 					occure: info.sessionStart,
-				},
-				sessions: []PlayerSession{},
+				}
 			}
-			players[info.playerId] = player
-		}
 
-		if player.nameInfo.occure < info.sessionStart {
-			player.nameInfo = PlayerNameInfo{
-				name:   info.playerName,
-				occure: info.sessionStart,
+			events, err := getPlayerEvents(path.Join(src.Directory, fi.Name()))
+			if err != nil {
+				return []Player{}, err
 			}
-		}
 
-		events, err := getPlayerEvents(path.Join(sourceDir, fi.Name()))
-		if err != nil {
-			return []Player{}, err
+			playerSession := PlayerSession{
+				fileName:     path.Join(src.Directory, fi.Name()),
+				missionName:  info.missionName,
+				sessionStart: time.Unix(info.sessionStart, 0),
+				events:       events,
+				sorties:      []Sortie{},
+				source:       src.Name,
+			}
+			player.sessions = append(player.sessions, playerSession)
+			playerSession.sorties, err = getSortiesFromSession(&playerSession)
+			if err != nil {
+				return []Player{}, err
+			}
+			playersMap[info.playerId] = player
 		}
-
-		playerSession := PlayerSession{
-			fileName:     path.Join(sourceDir, fi.Name()),
-			missionName:  info.missionName,
-			sessionStart: time.Unix(info.sessionStart, 0),
-			events:       events,
-			sorties:      []Sortie{},
-		}
-		player.sessions = append(player.sessions, playerSession)
-		playerSession.sorties, err = getSortiesFromSession(&playerSession)
-		if err != nil {
-			return []Player{}, err
-		}
-		players[info.playerId] = player
 	}
 
 	playerSlice := []Player{}
-	for _, playerStats := range players {
+	for _, playerStats := range playersMap {
 		playerSlice = append(playerSlice, playerStats)
 	}
 

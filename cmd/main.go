@@ -11,8 +11,8 @@ import (
 )
 
 type StatsConfig struct {
-	SourceDir string `json:"sourceDir"`
-	OutputDir string `json:"outputDir"`
+	Sources   []m.Source `json:"sources"`
+	OutputDir string     `json:"outputDir"`
 }
 
 func main() {
@@ -35,7 +35,7 @@ func main() {
 		panic(err)
 	}
 
-	players, err := m.ReadData(config.SourceDir, config.OutputDir)
+	players, err := m.ReadData(config.Sources, config.OutputDir)
 	if err != nil {
 		log.Println(err)
 		panic(err)
